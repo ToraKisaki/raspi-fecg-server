@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>fECG • Sign in</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="login">
+    <div class="box">
+      <h1>fECG Monitor <span class="dot">●</span></h1>
+      <p class="sub">Clinician sign-in</p>
+      <input id="u" placeholder="Username" autocomplete="username" autocapitalize="none">
+      <input id="p" type="password" placeholder="Password" autocomplete="current-password">
+      <button class="btn wide" id="go" style="margin-top:8px">Sign in</button>
+      <p class="err" id="err"></p>
+      <p class="hint">Demo: doctor / password</p>
+    </div>
+  </div>
+<script>
+const go = document.getElementById('go'), u = document.getElementById('u'),
+      p = document.getElementById('p'), err = document.getElementById('err');
+async function login(){
+  err.textContent=''; go.disabled=true; go.textContent='Signing in…';
+  try{
+    const r = await fetch('/login',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({username:u.value,password:p.value})});
+    if(r.ok){ location.href='/'; return; }
+    err.textContent='Invalid username or password';
+  }catch(e){ err.textContent='Network error — is the server running?'; }
+  go.disabled=false; go.textContent='Sign in';
+}
+go.onclick=login;
+p.addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+u.addEventListener('keydown',e=>{if(e.key==='Enter')p.focus();});
+u.focus();
+</script>
+</body>
+</html>

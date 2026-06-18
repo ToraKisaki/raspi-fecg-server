@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>fECG • Patients</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="title">fECG <span class="dot">●</span></div>
+      <div class="grow"></div>
+      <span class="who" data-who></span>
+      <button class="btn icon accent" id="add" title="Add patient">+</button>
+      <form action="/logout" method="post" style="display:inline">
+        <button class="btn icon" title="Sign out" type="submit">⏻</button>
+      </form>
+    </div>
+    <div class="content">
+      <div class="search">
+        <input id="q" placeholder="Search name, ID, MRN…" autocapitalize="none">
+      </div>
+      <div class="list" id="list"></div>
+      <div class="empty hidden" id="empty">No patients match. Tap + to add one,<br>or connect a device.</div>
+    </div>
+  </div>
+<script src="/static/app.js"></script>
+<script>
+const list = $('#list'), empty = $('#empty'), q = $('#q');
+const rows = new Map();        // pid -> element
+let patients = [];
+
+function statusCls(p){
+  if (!p.streaming) return 'idle';
+  if (p.alarm === 'low' || p.alarm === 'high') return p.alarm;
+  if (p.alarm === 'signal') return 'signal';
+  return 'live';
+}
+function rank(p){
+  if (p.alarm === 'low' || p.alarm === 'high') return 0;
+  if (p.alarm === 'signal') return 1;
+  if (p.streaming) return 2;
+  return 3;
+}
+
+function rowFor(p){
+  let el = rows.get(p.id);
+  if (!el){
+    el = document.createElement('div'); el.className='pt'; el.dataset.id=p.id;
+    el.innerHTML = `<span class="dot idle"></span>
+      <div class="who"><div class="nm"></div><div class="sub"></div></div>
+      <canvas class="spark"></canvas>
+      <div class="fhr"><b>—</b><span>fetal bpm</span></div>`;
+    el.onclick = () => location.href = '/patient/' + encodeURIComponent(p.id);
+    rows.set(p.id, el);
+  }
+  const st = statusCls(p);
+  el.className = 'pt' + (p.streaming ? ' live' : '') +
+    (p.alarm && p.alarm!=='ok' && p.streaming ? ' alarm-'+p.alarm : '');
+  $('.dot', el).className = 'dot ' + st;
+  $('.nm', el).textContent = p.name || p.id;
+  const sub = [p.id, p.mrn].filter(Boolean).join(' • ');
+  $('.sub', el).textContent = p.streaming && p.mhr ? `${sub} • mat ${p.mhr}` : sub;
+  const fhr = $('.fhr', el);
+  fhr.className = 'fhr ' + (p.streaming && p.alarm ? p.alarm : '');
+  $('b', fhr).textContent = (p.streaming && p.fhr) ? p.fhr : '—';
+  // canvas can't read CSS vars, so resolve the trace colour first
+  const col = getComputedStyle(document.body).getPropertyValue('--fecg').trim() || '#ff5c9d';
+  drawSpark($('.spark', el), (p.streaming && p.spark) ? p.spark : [], col);
+  return el;
+}
+
+function render(){
+  const term = q.value.trim().toLowerCase();
+  const shown = patients
+    .filter(p => !term || (`${p.id} ${p.name||''} ${p.mrn||''}`).toLowerCase().includes(term))
+    .sort((a,b) => rank(a)-rank(b) || (b.last_seen||0)-(a.last_seen||0));
+  empty.classList.toggle('hidden', shown.length > 0);
+  const seen = new Set();
+  shown.forEach(p => { list.appendChild(rowFor(p)); seen.add(p.id); });
+  for (const [pid, el] of rows){ if (!seen.has(pid)){ el.remove(); rows.delete(pid); } }
+}
+
+async function load(){
+  try{
+    const {ok, data} = await api('/api/patients');
+    if (ok){ patients = data.patients; render(); }
+  }catch(e){}
+}
+
+$('#add').onclick = () => openPatientSheet(null, () => load());
+q.addEventListener('input', render);
+loadMe(); load(); setInterval(load, 2000);
+</script>
+</body>
+</html>

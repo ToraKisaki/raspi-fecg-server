@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Runtime data (SQLite + WAL)
+fecg.db
+fecg.db-wal
+fecg.db-shm
+*.sqlite
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
