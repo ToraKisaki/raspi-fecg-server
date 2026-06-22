@@ -20,7 +20,6 @@ computes fetal/maternal heart rate, signal quality, and alarms itself from the
 incoming samples (`analysis.py`). See [`WEB_WORKFLOW.md`](WEB_WORKFLOW.md) for the
 full workflow, screens, API/WebSocket surface, and data model.
 
-> Research/educational software — **not a certified medical device.**
 
 ---
 
