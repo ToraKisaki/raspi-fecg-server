@@ -11,11 +11,11 @@
     <div class="box">
       <h1>fECG Monitor <span class="dot">●</span></h1>
       <p class="sub">Clinician sign-in</p>
-      <input id="u" placeholder="Username" autocomplete="username" autocapitalize="none">
+      <input id="u" placeholder="Phone or email" autocomplete="username" autocapitalize="none">
       <input id="p" type="password" placeholder="Password" autocomplete="current-password">
       <button class="btn wide" id="go" style="margin-top:8px">Sign in</button>
       <p class="err" id="err"></p>
-      <p class="hint">Demo: doctor / password</p>
+      <p class="hint">Demo: 0900000001 / password</p>
     </div>
   </div>
 <script>
@@ -26,9 +26,9 @@ async function login(){
   try{
     const r = await fetch('/login',{method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:new URLSearchParams({username:u.value,password:p.value})});
+      body:new URLSearchParams({identifier:u.value,password:p.value})});
     if(r.ok){ location.href='/'; return; }
-    err.textContent='Invalid username or password';
+    err.textContent='Invalid phone/email or password';
   }catch(e){ err.textContent='Network error — is the server running?'; }
   go.disabled=false; go.textContent='Sign in';
 }

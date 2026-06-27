@@ -6,24 +6,27 @@ Responsibilities:
   * accept a device WebSocket (/ws/device) that streams (t, raw, fecg) batches,
     derives live FHR/MHR/signal-quality/alarm, persists a downsampled copy, and
     fans the samples + metrics out live
-  * serve doctors a session-cookie login and a touch web dashboard
+  * serve clinical staff a session-cookie login and a touch web dashboard
   * expose a live WebSocket (/ws/live/{patient_id}) the dashboard subscribes to
   * REST: patient list (+ live metrics), patient detail/stats, create/edit/archive
 
 Run:
     pip install -r requirements.txt
-    python seed.py            # creates demo doctor + patients (first time)
+    python seed.py            # creates demo staff user + patients (first time)
     uvicorn app:app --host 0.0.0.0 --port 8000
 """
 
 import os
+import io
+import csv
 import json
 import asyncio
 import time
 from collections import defaultdict
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import (HTMLResponse, RedirectResponse, JSONResponse,
+                               Response)
 from fastapi.staticfiles import StaticFiles
 
 import database as db
@@ -85,16 +88,16 @@ hub = Hub()
 
 
 # ---------------- auth helpers ----------------
-def current_doctor(request: Request):
+def current_user(request: Request):
     token = request.cookies.get("session")
-    return db.doctor_for_token(token)
+    return db.user_for_token(token)
 
 
-def require_doctor(request: Request):
-    doc = current_doctor(request)
-    if not doc:
+def require_user(request: Request):
+    user = current_user(request)
+    if not user:
         raise HTTPException(status_code=401, detail="login required")
-    return doc
+    return user
 
 
 # ---------------- device ingest ----------------
@@ -105,6 +108,10 @@ async def ws_device(ws: WebSocket):
     patient_id = None
     persist_buf = []
     counter = 0
+    metrics_buf = []          # (t, fhr, mhr, sq, alarm) rows, flushed in batches
+    last_metric_t = None      # device clock of last persisted metric (~1 Hz)
+    last_alarm = None         # last alarm state, to log only transitions
+    first_t = last_t = None   # device-clock span of the session (for markers)
     try:
         while True:
             msg = json.loads(await ws.receive_text())
@@ -136,12 +143,39 @@ async def ws_device(ws: WebSocket):
                 if len(persist_buf) >= 50:
                     db.insert_samples(session_id, persist_buf)
                     persist_buf = []
+
+                # ---- derived-metric trend (~1 Hz) + alarm event log ----
+                if metrics and batch:
+                    t = batch[-1][0]
+                    if first_t is None:
+                        first_t = t
+                        db.insert_event(session_id, patient_id, t,
+                                        "session", "Session started")
+                    last_t = t
+                    if last_metric_t is None or (t - last_metric_t) >= 1.0:
+                        metrics_buf.append((t, metrics.get("fhr"),
+                                            metrics.get("mhr"), metrics.get("sq"),
+                                            metrics.get("alarm")))
+                        last_metric_t = t
+                        if len(metrics_buf) >= 20:
+                            db.insert_metrics(session_id, metrics_buf)
+                            metrics_buf = []
+                    alarm = metrics.get("alarm")
+                    if alarm != last_alarm:
+                        last_alarm = alarm
+                        db.insert_event(session_id, patient_id, t, "alarm",
+                                        metrics.get("label") or alarm)
     except WebSocketDisconnect:
         pass
     finally:
         if persist_buf and session_id is not None:
             db.insert_samples(session_id, persist_buf)
+        if metrics_buf and session_id is not None:
+            db.insert_metrics(session_id, metrics_buf)
         if session_id is not None:
+            if last_t is not None:
+                db.insert_event(session_id, patient_id, last_t,
+                                "session", "Session ended")
             db.end_session(session_id)
         if patient_id is not None:
             hub.analyzers.pop(patient_id, None)
@@ -169,17 +203,17 @@ async def ws_live(ws: WebSocket, patient_id: str):
 # ---------------- auth routes ----------------
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
-    with open(os.path.join(STATIC_DIR, "login.html")) as f:
+    with open(os.path.join(STATIC_DIR, "login.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @app.post("/login")
-async def login(username: str = Form(...), password: str = Form(...)):
-    doc = db.get_doctor_by_username(username)
-    if not doc or not db.check_password(password, doc["password_hash"]):
+async def login(identifier: str = Form(...), password: str = Form(...)):
+    user = db.get_user_by_login(identifier)
+    if not user or not db.check_password(password, user["password"]):
         return JSONResponse({"ok": False, "detail": "invalid credentials"},
                             status_code=401)
-    token = db.create_login(doc["id"])
+    token = db.create_login(user["id"])
     resp = JSONResponse({"ok": True})
     resp.set_cookie("session", token, httponly=True, samesite="lax")
     return resp
@@ -197,17 +231,26 @@ async def logout(request: Request):
 # ---------------- pages ----------------
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    if not current_doctor(request):
+    if not current_user(request):
         return RedirectResponse("/login")
-    with open(os.path.join(STATIC_DIR, "dashboard.html")) as f:
+    with open(os.path.join(STATIC_DIR, "dashboard.html"), encoding="utf-8") as f:
         return f.read()
 
 
 @app.get("/patient/{patient_id}", response_class=HTMLResponse)
 async def patient_page(request: Request, patient_id: str):
-    if not current_doctor(request):
+    if not current_user(request):
         return RedirectResponse("/login")
-    with open(os.path.join(STATIC_DIR, "patient.html")) as f:
+    with open(os.path.join(STATIC_DIR, "patient.html"), encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/report/{session_id}", response_class=HTMLResponse)
+async def report_page(request: Request, session_id: int):
+    """Printable per-session report (clinician prints to PDF from the browser)."""
+    if not current_user(request):
+        return RedirectResponse("/login")
+    with open(os.path.join(STATIC_DIR, "report.html"), encoding="utf-8") as f:
         return f.read()
 
 
@@ -230,13 +273,14 @@ def _live_view(pid):
 
 @app.get("/api/me")
 async def api_me(request: Request):
-    doc = require_doctor(request)
-    return {"id": doc["id"], "username": doc["username"], "name": doc["name"]}
+    user = require_user(request)
+    return {"id": user["id"], "name": user["name"],
+            "role": user["role"], "email": user["email"]}
 
 
 @app.get("/api/patients")
 async def api_patients(request: Request):
-    require_doctor(request)
+    require_user(request)
     pts = db.list_patients()
     for p in pts:
         p.update(_live_view(p["id"]))
@@ -245,15 +289,17 @@ async def api_patients(request: Request):
 
 @app.post("/api/patients")
 async def api_create_patient(request: Request):
-    require_doctor(request)
+    require_user(request)
     body = await request.json()
     try:
         p = db.create_patient(
             body.get("id"),
-            name=body.get("name"),
+            full_name=body.get("full_name"),
+            gender=body.get("gender"),
+            date_of_birth=body.get("date_of_birth"),
             mrn=body.get("mrn"),
-            sex=body.get("sex"),
-            dob=body.get("dob"),
+            citizen_id=body.get("citizen_id"),
+            address=body.get("address"),
             notes=body.get("notes"),
         )
     except ValueError as e:
@@ -263,23 +309,25 @@ async def api_create_patient(request: Request):
 
 @app.patch("/api/patients/{patient_id}")
 async def api_update_patient(request: Request, patient_id: str):
-    require_doctor(request)
+    require_user(request)
     if not db.get_patient(patient_id):
         raise HTTPException(404, "no such patient")
     body = await request.json()
     return db.update_patient(
         patient_id,
-        name=body.get("name"),
+        full_name=body.get("full_name"),
+        gender=body.get("gender"),
+        date_of_birth=body.get("date_of_birth"),
         mrn=body.get("mrn"),
-        sex=body.get("sex"),
-        dob=body.get("dob"),
+        citizen_id=body.get("citizen_id"),
+        address=body.get("address"),
         notes=body.get("notes"),
     )
 
 
 @app.post("/api/patients/{patient_id}/archive")
 async def api_archive_patient(request: Request, patient_id: str):
-    require_doctor(request)
+    require_user(request)
     if not db.get_patient(patient_id):
         raise HTTPException(404, "no such patient")
     archived = True
@@ -294,7 +342,7 @@ async def api_archive_patient(request: Request, patient_id: str):
 
 @app.get("/api/patients/{patient_id}")
 async def api_patient(request: Request, patient_id: str):
-    require_doctor(request)
+    require_user(request)
     p = db.get_patient(patient_id)
     if not p:
         raise HTTPException(404, "no such patient")
@@ -302,6 +350,61 @@ async def api_patient(request: Request, patient_id: str):
     p["recent"] = db.recent_samples(patient_id, limit=2000)
     p["live"] = _live_view(patient_id)
     return p
+
+
+@app.get("/api/patients/{patient_id}/events")
+async def api_patient_events(request: Request, patient_id: str):
+    """Alarm / session-marker event log for a patient (newest first)."""
+    require_user(request)
+    if not db.get_patient(patient_id):
+        raise HTTPException(404, "no such patient")
+    return {"events": db.patient_events(patient_id)}
+
+
+@app.get("/api/sessions/{session_id}/metrics")
+async def api_session_metrics(request: Request, session_id: int):
+    """FHR/MHR/SQ/alarm trend (~1 Hz) for one session — drives the trend chart."""
+    require_user(request)
+    s = db.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "no such session")
+    return {"session": s,
+            "metrics": db.session_metrics(session_id),
+            "events": db.session_events(session_id)}
+
+
+@app.get("/api/sessions/{session_id}/samples")
+async def api_session_samples(request: Request, session_id: int):
+    """All recorded waveform samples for one session — drives replay."""
+    require_user(request)
+    s = db.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "no such session")
+    return {"session": s, "samples": db.session_samples(session_id)}
+
+
+@app.get("/api/sessions/{session_id}/export.csv")
+async def api_export_csv(request: Request, session_id: int, kind: str = "samples"):
+    """Download a session as CSV. kind=samples (t,raw,fecg) | metrics (t,fhr,mhr,sq,alarm)."""
+    require_user(request)
+    s = db.get_session(session_id)
+    if not s:
+        raise HTTPException(404, "no such session")
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    if kind == "metrics":
+        w.writerow(["t", "fhr", "mhr", "sq", "alarm"])
+        w.writerows(db.session_metrics(session_id, limit=10_000_000))
+    else:
+        kind = "samples"
+        w.writerow(["t", "raw", "fecg"])
+        w.writerows(db.session_samples(session_id, limit=10_000_000))
+    fname = f"{s['patient_id']}_session{session_id}_{kind}.csv"
+    return Response(
+        buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -49,7 +49,7 @@ opened from another browser on the LAN).
                          └────────────────────────────────────────────────────────┘
 ```
 
-1. **Sign in.** Clinician opens `/login` and authenticates (demo: `doctor` /
+1. **Sign in.** Clinician opens `/login` and authenticates (demo: `0900000001` /
    `password`). A httponly session cookie is set.
 2. **Dashboard (`/`).** A touch list of patients. Each row shows live status, the
    **fetal HR**, a fECG **sparkline**, the maternal HR, and turns red when an
@@ -145,15 +145,18 @@ SQ ≈ 97, alarm `ok` (`python3 server/analysis.py`).
 ## 6. Data model (`server/database.py`, SQLite/WAL)
 
 ```
-doctors(id, username, password_hash, name, created_at)
-patients(id, name, mrn, sex, dob, notes, created_at, archived)
+users(id, phone_number, email, password, role, is_active, created_at, updated_at)
+staff_profile(id, user_id, full_name, specialization, degree)
+user_login(token, user_id, created_at)          # cookie sessions
+patients(id, full_name, gender, date_of_birth, mrn, citizen_id, address, notes, created_at, archived)
 sessions(id, patient_id, started_at, ended_at, sample_rate)
 samples(id, session_id, t, raw, fecg)          # 1-in-4 downsampled history
-doctor_login(token, doctor_id, created_at)      # cookie sessions
 ```
 
-Passwords are PBKDF2-HMAC-SHA256 (salted). `archived` was added in this revision
-(auto-migrated on startup); reconnecting a device un-archives its patient.
+Only staff are accounts (`users` + `staff_profile`); login is by phone or email.
+Patients are monitored subjects (no login), keyed by a TEXT natural id.
+Passwords are PBKDF2-HMAC-SHA256 (salted, stored in `users.password`).
+Reconnecting a device un-archives its patient.
 
 ---
 
@@ -162,7 +165,7 @@ Passwords are PBKDF2-HMAC-SHA256 (salted). `archived` was added in this revision
 ```bash
 cd server
 pip install -r requirements.txt          # fastapi, uvicorn, python-multipart, numpy
-python seed.py                           # demo doctor/password + patients P001–P003
+python seed.py                           # demo 0900000001/password + patients P001–P003
 uvicorn app:app --host 0.0.0.0 --port 8000
 # open http://<pi>:8000/login  (on the Pi's own 480×320 screen / kiosk browser)
 ```

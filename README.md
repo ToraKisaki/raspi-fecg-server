@@ -28,12 +28,12 @@ full workflow, screens, API/WebSocket surface, and data model.
 
 ```bash
 pip install -r requirements.txt        # fastapi, uvicorn, python-multipart, numpy
-python seed.py                         # demo doctor/password + patients P001–P003
+python seed.py                         # demo 0900000001/password + patients P001–P003
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 `--host 0.0.0.0` is required so the Pi can reach it over the LAN. Open the
-dashboard at `http://<PC-IP>:8000/login` (demo login: **doctor / password**).
+dashboard at `http://<PC-IP>:8000/login` (demo login: **0900000001 / password**).
 
 Find the PC's LAN IP:
 - Linux/macOS: `hostname -I` or `ipconfig getifaddr en0`
@@ -75,8 +75,10 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 | `FECG_DEVICE_TOKEN` | `device-secret-001` | shared secret the device must present |
 | `FECG_DB` | `./fecg.db` | SQLite database path |
 
-Add clinicians from a Python shell: `import database as db;
-db.create_doctor("user", "pass", name="Dr. Name")`.
+Add clinical staff from a Python shell: `import database as db;
+db.create_staff(phone_number="0900000002", email="me@hospital.local",
+                password="pass", full_name="Dr. Name",
+                specialization="Sản khoa", degree="BS.CKI")`.
 
 ---
 

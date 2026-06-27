@@ -85,9 +85,9 @@ h2{font-size:16px}h3{font-size:13px;color:var(--muted);text-transform:uppercase;
   border:1px solid var(--line);border-left:3px solid var(--line);
   border-radius:var(--r);padding:10px 12px;cursor:pointer}
 .pt:active{background:var(--panel2)}
-.pt.alarm-low,.pt.alarm-high{border-left-color:var(--crit);background:linear-gradient(90deg,rgba(251,81,96,.10),var(--panel))}
-.pt.alarm-signal{border-left-color:var(--warn)}
 .pt.live{border-left-color:var(--ok)}
+.pt.alarm-signal{border-left-color:var(--warn)}
+.pt.alarm-low,.pt.alarm-high{border-left-color:var(--crit);background:linear-gradient(90deg,rgba(251,81,96,.10),var(--panel))}
 .pt .who{flex:1;min-width:0}
 .pt .nm{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pt .sub{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -183,9 +183,113 @@ th{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5p
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{border-color:var(--crit);color:#ffd7db}
 
-/* ---------- graceful scale-up on larger screens ---------- */
-@media(min-width:560px){
+/* ================================================================
+   Extra tile elements — present in markup, hidden on the Pi's narrow
+   screen, revealed on desktop where there is room (progressive
+   enhancement, so the 480x320 list is unchanged).
+   ================================================================ */
+.pt .chip{display:none;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;
+  font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;
+  background:rgba(144,160,186,.14);color:var(--muted);white-space:nowrap}
+.pt .chip.live{background:rgba(52,211,153,.16);color:var(--ok)}
+.pt .chip.low,.pt .chip.high{background:rgba(251,81,96,.18);color:var(--crit)}
+.pt .chip.signal{background:rgba(251,191,36,.18);color:var(--warn)}
+.pt .mhr{display:none;text-align:right;min-width:58px}
+.pt .mhr b{font-size:20px;font-weight:800;line-height:1;color:var(--raw);font-variant-numeric:tabular-nums}
+.pt .mhr span{display:block;font-size:9px;color:var(--muted);letter-spacing:.5px;text-transform:uppercase}
+.pt .sqmini{display:none;flex:1;min-width:80px}
+.pt .sqmini span{font-size:9px;color:var(--muted);letter-spacing:.5px;text-transform:uppercase}
+.pt .sqmini .bar{height:4px;border-radius:3px;background:var(--line);margin-top:4px;overflow:hidden}
+.pt .sqmini .bar i{display:block;height:100%;width:0;background:var(--ok);transition:width .4s,background .4s}
+
+/* toolbar live summary + sound toggle (desktop affordances) */
+.summary{display:none;align-items:center;gap:10px;font-size:12px;color:var(--muted);font-weight:600}
+.summary b{font-variant-numeric:tabular-nums}
+.summary .s-alarm{color:var(--crit)}
+.summary .s-live{color:var(--ok)}
+
+/* ================================================================
+   Trend chart + alarm log + sessions + replay (size-agnostic)
+   ================================================================ */
+.chartwrap{position:relative;background:#05080d;border:1px solid var(--line);
+  border-radius:var(--r-sm);height:200px;overflow:hidden}
+.chartwrap canvas{position:absolute;inset:0;width:100%;height:100%}
+.chartwrap .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--muted);margin:8px 2px 0}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+
+.log{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto}
+.log .ev{display:flex;align-items:center;gap:9px;padding:7px 10px;background:var(--panel2);
+  border:1px solid var(--line);border-left:3px solid var(--line);border-radius:var(--r-sm);font-size:12px}
+.log .ev .t{color:var(--faint);font-variant-numeric:tabular-nums;min-width:62px}
+.log .ev .lab{flex:1;font-weight:600}
+.log .ev.low,.log .ev.high{border-left-color:var(--crit)}
+.log .ev.signal{border-left-color:var(--warn)}
+.log .ev.ok{border-left-color:var(--ok)}
+.log .ev.session{border-left-color:var(--accent);color:var(--muted)}
+
+.sess{display:flex;flex-direction:column;gap:8px}
+.sess .s{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px}
+.sess .s.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.sess .s .top{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.sess .s .top .id{font-weight:800}
+.sess .s .top .dur{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}
+.sess .s .when{font-size:11px;color:var(--muted)}
+.sess .s .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.sess .s .acts .btn{min-height:34px;padding:0 12px;font-size:12px}
+
+.replay{display:none;align-items:center;gap:10px;padding:8px 10px;background:var(--panel2);
+  border-top:1px solid var(--line2)}
+.replay.show{display:flex}
+.replay .btn{min-height:34px;width:auto;padding:0 12px}
+.replay input[type=range]{flex:1;accent-color:var(--accent)}
+.replay .clock{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:74px;text-align:right}
+
+/* ================================================================
+   Tablet — keep the centered narrow column the Pi-first UI assumes
+   ================================================================ */
+@media(min-width:560px) and (max-width:899px){
   .app,.login{max-width:760px;margin:0 auto;border-left:1px solid var(--line);border-right:1px solid var(--line)}
   .sheet{max-width:760px;left:50%;right:auto;transform:translate(-50%,100%)}
   .sheet.show{transform:translate(-50%,0)}
+}
+.login{max-width:760px;margin:0 auto}
+
+/* ================================================================
+   DESKTOP — central monitoring station (>= 900px)
+   ================================================================ */
+@media(min-width:900px){
+  body{overflow:auto;user-select:auto;-webkit-user-select:auto}
+  .app{max-width:1640px;margin:0 auto;height:100dvh}
+  .topbar{flex-basis:56px;padding:0 18px;gap:14px}
+  .topbar .title{font-size:18px}
+  .topbar .who{font-size:13px;max-width:none}
+  .summary{display:flex}
+  .content{padding:18px}
+
+  /* patient list becomes a responsive monitoring wall */
+  .list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+    gap:14px;align-content:start}
+  .pt{flex-wrap:wrap;align-items:center;gap:8px 12px;padding:14px 16px;border-left-width:4px}
+  .pt:active{background:var(--panel)}
+  .pt:hover{border-color:var(--line2);background:var(--panel2)}
+  .pt .dot{order:0;width:11px;height:11px}
+  .pt .who{order:1;flex:1 1 auto}
+  .pt .nm{font-size:17px}
+  .pt .chip{order:2;display:inline-flex}
+  .pt canvas.spark{order:3;flex-basis:100%;width:100%;height:62px;margin:2px 0}
+  .pt .fhr{order:4;min-width:70px}
+  .pt .fhr b{font-size:30px}
+  .pt .mhr{order:5;display:block}
+  .pt .sqmini{order:6;display:block}
+
+  /* patient view: tabs stay, but use the full width and taller traces */
+  .tabbar{flex-basis:52px;max-width:1640px;margin:0 auto;width:100%}
+  #monitor .metrics{grid-template-columns:1fr 1fr;max-width:none}
+  #monitor .metric .val{font-size:54px}
+  .grid-2c{display:grid;grid-template-columns:1.4fr 1fr;gap:14px;align-items:start}
+  .chartwrap{height:240px}
+}
+@media(min-width:1280px){
+  .list{grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
 }

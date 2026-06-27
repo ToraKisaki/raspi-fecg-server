@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>fECG • Patients</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -10,8 +10,10 @@
   <div class="app">
     <div class="topbar">
       <div class="title">fECG <span class="dot">●</span></div>
+      <span class="summary" id="summary"></span>
       <div class="grow"></div>
       <span class="who" data-who></span>
+      <button class="btn icon" id="sound" title="Toggle alarm sound">🔕</button>
       <button class="btn icon accent" id="add" title="Add patient">+</button>
       <form action="/logout" method="post" style="display:inline">
         <button class="btn icon" title="Sign out" type="submit">⏻</button>
@@ -44,14 +46,19 @@ function rank(p){
   return 3;
 }
 
+const STATUS_LABEL = {live:'live', low:'brady', high:'tachy', signal:'signal', idle:'idle'};
+
 function rowFor(p){
   let el = rows.get(p.id);
   if (!el){
     el = document.createElement('div'); el.className='pt'; el.dataset.id=p.id;
     el.innerHTML = `<span class="dot idle"></span>
       <div class="who"><div class="nm"></div><div class="sub"></div></div>
+      <span class="chip"></span>
       <canvas class="spark"></canvas>
-      <div class="fhr"><b>—</b><span>fetal bpm</span></div>`;
+      <div class="fhr"><b>—</b><span>fetal bpm</span></div>
+      <div class="mhr"><b>—</b><span>mat bpm</span></div>
+      <div class="sqmini"><span>signal</span><div class="bar"><i></i></div></div>`;
     el.onclick = () => location.href = '/patient/' + encodeURIComponent(p.id);
     rows.set(p.id, el);
   }
@@ -59,12 +66,20 @@ function rowFor(p){
   el.className = 'pt' + (p.streaming ? ' live' : '') +
     (p.alarm && p.alarm!=='ok' && p.streaming ? ' alarm-'+p.alarm : '');
   $('.dot', el).className = 'dot ' + st;
-  $('.nm', el).textContent = p.name || p.id;
+  $('.nm', el).textContent = p.full_name || p.id;
   const sub = [p.id, p.mrn].filter(Boolean).join(' • ');
-  $('.sub', el).textContent = p.streaming && p.mhr ? `${sub} • mat ${p.mhr}` : sub;
+  $('.sub', el).textContent = sub;
+  const chip = $('.chip', el);
+  chip.className = 'chip ' + st;
+  chip.textContent = STATUS_LABEL[st] || st;
   const fhr = $('.fhr', el);
   fhr.className = 'fhr ' + (p.streaming && p.alarm ? p.alarm : '');
   $('b', fhr).textContent = (p.streaming && p.fhr) ? p.fhr : '—';
+  $('.mhr b', el).textContent = (p.streaming && p.mhr) ? p.mhr : '—';
+  const sq = (p.streaming && p.sq!=null) ? p.sq : 0, bar = $('.sqmini .bar i', el);
+  bar.style.width = sq + '%';
+  bar.style.background = sq>=60 ? 'var(--ok)' : sq>=30 ? 'var(--warn)' : 'var(--crit)';
+  $('.sqmini span', el).textContent = 'signal ' + (p.streaming && p.sq!=null ? sq+'%' : '—');
   // canvas can't read CSS vars, so resolve the trace colour first
   const col = getComputedStyle(document.body).getPropertyValue('--fecg').trim() || '#ff5c9d';
   drawSpark($('.spark', el), (p.streaming && p.spark) ? p.spark : [], col);
@@ -74,13 +89,45 @@ function rowFor(p){
 function render(){
   const term = q.value.trim().toLowerCase();
   const shown = patients
-    .filter(p => !term || (`${p.id} ${p.name||''} ${p.mrn||''}`).toLowerCase().includes(term))
+    .filter(p => !term || (`${p.id} ${p.full_name||''} ${p.mrn||''}`).toLowerCase().includes(term))
     .sort((a,b) => rank(a)-rank(b) || (b.last_seen||0)-(a.last_seen||0));
   empty.classList.toggle('hidden', shown.length > 0);
   const seen = new Set();
   shown.forEach(p => { list.appendChild(rowFor(p)); seen.add(p.id); });
   for (const [pid, el] of rows){ if (!seen.has(pid)){ el.remove(); rows.delete(pid); } }
+  updateSummary();
 }
+
+/* ---- live summary + alarm sound ---- */
+function updateSummary(){
+  const live = patients.filter(p => p.streaming).length;
+  const alarming = patients.filter(p => p.streaming && (p.alarm==='low'||p.alarm==='high')).length;
+  const sig = patients.filter(p => p.streaming && p.alarm==='signal').length;
+  $('#summary').innerHTML =
+    `<span class="s-live">● <b>${live}</b> live</span>` +
+    (alarming ? ` · <span class="s-alarm">⚠ <b>${alarming}</b> alarm</span>` : '') +
+    (sig ? ` · <b>${sig}</b> signal` : '');
+  beepIfAlarm(alarming > 0);
+}
+
+let soundOn = false, audioCtx = null, lastBeep = 0;
+$('#sound').onclick = () => {
+  soundOn = !soundOn;
+  $('#sound').textContent = soundOn ? '🔔' : '🔕';
+  $('#sound').classList.toggle('accent', soundOn);
+  if (soundOn && !audioCtx){ try{ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+};
+function beepIfAlarm(active){
+  if (!active || !soundOn || !audioCtx) return;
+  const now = Date.now();
+  if (now - lastBeep < 2500) return;        // at most one beep every 2.5 s
+  lastBeep = now;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.frequency.value = 880; o.type = 'square';
+  g.gain.value = 0.06; o.connect(g); g.connect(audioCtx.destination);
+  o.start(); o.stop(audioCtx.currentTime + 0.18);
+}
+window.addEventListener('resize', () => { clearTimeout(window._rz); window._rz = setTimeout(render, 150); });
 
 async function load(){
   try{

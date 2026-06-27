@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>fECG • Patient</title>
 <link rel="stylesheet" href="/static/style.css">
 <style>
@@ -11,7 +11,7 @@
   .screen{position:absolute;inset:0}
   .screen.hidden{display:none}
   #monitor{display:flex;flex-direction:column;padding:8px;gap:7px}
-  #info{overflow-y:auto;padding:10px}
+  #info,#trends,#sessions{overflow-y:auto;padding:10px}
   #monitor .metrics{margin:0;grid-template-columns:1.15fr 1fr}
   #monitor .metric{padding:5px 11px}
   #monitor .metric .val{font-size:40px}
@@ -52,6 +52,39 @@
           <div class="trace" id="t_raw"><span class="tag"><i style="background:var(--raw)"></i>Raw abdominal</span><canvas></canvas></div>
           <div class="trace fe" id="t_fe"><span class="tag"><i style="background:var(--fecg)"></i>fECG · AI extracted</span><canvas></canvas></div>
         </div>
+        <div class="replay" id="replaybar">
+          <button class="btn" id="rp_play">▶</button>
+          <input type="range" id="rp_seek" min="0" max="1000" value="0">
+          <span class="clock" id="rp_clock">0s / 0s</span>
+          <button class="btn ghost" id="rp_stop">Live</button>
+        </div>
+      </div>
+
+      <!-- TRENDS -->
+      <div class="screen hidden" id="trends">
+        <div class="card">
+          <h3 style="display:flex;align-items:center;gap:8px">FHR / MHR trend
+            <select id="trendsel" style="margin-left:auto;min-height:32px;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:0 8px;font-size:12px"></select>
+          </h3>
+          <div class="chartwrap"><canvas id="trendcv"></canvas></div>
+          <div class="legend">
+            <span><i style="background:var(--fecg)"></i>Fetal HR</span>
+            <span><i style="background:var(--raw)"></i>Maternal HR</span>
+            <span><i style="background:rgba(52,211,153,.5)"></i>normal band 110–160</span>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Alarm &amp; event log</h3>
+          <div class="log" id="log"></div>
+        </div>
+      </div>
+
+      <!-- SESSIONS -->
+      <div class="screen hidden" id="sessions">
+        <div class="card">
+          <h3>Recording sessions</h3>
+          <div class="sess" id="sesslist"></div>
+        </div>
       </div>
 
       <!-- INFO -->
@@ -64,12 +97,7 @@
           <div class="card" style="margin:0"><div class="lab muted">Recorded samples</div><div class="stat" id="nsamp">—</div></div>
           <div class="card" style="margin:0"><div class="lab muted">Sessions</div><div class="stat" id="nsess">—</div></div>
         </div>
-        <div class="card" style="margin-top:10px">
-          <h3>Sessions</h3>
-          <table><thead><tr><th>#</th><th>Started</th><th>Ended</th><th>Rate</th></tr></thead>
-            <tbody id="sessrows"></tbody></table>
-        </div>
-        <div class="row" style="display:flex;gap:8px">
+        <div class="row" style="display:flex;gap:8px;margin-top:10px">
           <button class="btn ghost" id="edit" style="flex:1">Edit patient</button>
           <button class="btn danger" id="archive" style="flex:1">Archive</button>
         </div>
@@ -78,6 +106,8 @@
 
     <div class="tabbar">
       <div class="tab active" data-tab="monitor"><span class="ic">♥</span>Monitor</div>
+      <div class="tab" data-tab="trends"><span class="ic">📈</span>Trends</div>
+      <div class="tab" data-tab="sessions"><span class="ic">≡</span>Sessions</div>
       <div class="tab" data-tab="info"><span class="ic">≣</span>Info</div>
     </div>
   </div>
@@ -91,12 +121,14 @@ let head = 0, filled = 0, frozen = false;
 let patient = null, idleTimer = null;
 
 /* ---- tabs ---- */
-$$('.tab').forEach(t => t.onclick = () => {
-  $$('.tab').forEach(x => x.classList.toggle('active', x === t));
-  $('#monitor').classList.toggle('hidden', t.dataset.tab !== 'monitor');
-  $('#info').classList.toggle('hidden', t.dataset.tab !== 'info');
-  resize();
-});
+function showTab(name){
+  $$('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
+  ['monitor','trends','sessions','info'].forEach(s =>
+    $('#'+s).classList.toggle('hidden', s !== name));
+  if (name === 'monitor') resize();
+  if (name === 'trends') drawTrendNow();
+}
+$$('.tab').forEach(t => t.onclick = () => showTab(t.dataset.tab));
 
 /* ---- freeze ---- */
 $('#freeze').onclick = () => {
@@ -146,13 +178,14 @@ function resize(){
   cRaw=$('#t_raw canvas'); cFe=$('#t_fe canvas');
   ctxRaw=setup(cRaw); ctxFe=setup(cFe);
 }
-window.addEventListener('resize', resize);
+window.addEventListener('resize', () => { resize(); drawTrendNow(); });
 
 function pushSample(raw, fe){
   if (frozen) return;
   buf.raw[head]=raw; buf.fe[head]=fe;
   head=(head+1)%WINDOW; filled=Math.min(filled+1,WINDOW);
 }
+function clearBuf(){ head=0; filled=0; }
 function drawTrace(ctx, canvas, arr, color){
   const W=canvas.clientWidth, H=canvas.clientHeight;
   ctx.clearRect(0,0,W,H);
@@ -179,23 +212,136 @@ function render(){
   requestAnimationFrame(render);
 }
 
+/* ---- trends + alarm log ---- */
+let trendMetrics=[], trendEvents=[], selSession=null;
+function drawTrendNow(){
+  if($('#trends').classList.contains('hidden')) return;
+  drawTrendChart($('#trendcv'), trendMetrics, {events:trendEvents});
+}
+function renderLog(events){
+  const order=[...events].reverse();   // newest first
+  $('#log').innerHTML = order.length ? order.map(e=>{
+    const cls = e.kind==='session' ? 'session' :
+      /brady/i.test(e.label)?'low': /tachy/i.test(e.label)?'high':
+      /signal/i.test(e.label)?'signal': /normal/i.test(e.label)?'ok':'';
+    const icon = e.kind==='session'?'◆': cls==='ok'?'✓':'⚠';
+    return `<div class="ev ${cls}"><span class="t">${fmtDur(e.t)}</span>
+      <span>${icon}</span><span class="lab">${esc(e.label)}</span></div>`;
+  }).join('') : '<div class="muted" style="padding:8px">No events recorded.</div>';
+}
+async function loadTrend(sid){
+  if(sid==null) return;
+  selSession=sid;
+  if($('#trendsel').value!=String(sid)) $('#trendsel').value=String(sid);
+  const {ok,data}=await api('/api/sessions/'+sid+'/metrics');
+  if(!ok){ trendMetrics=[]; trendEvents=[]; }
+  else { trendMetrics=data.metrics||[]; trendEvents=data.events||[]; }
+  renderLog(trendEvents); drawTrendNow();
+}
+$('#trendsel').onchange = () => loadTrend(parseInt($('#trendsel').value,10));
+
+/* ---- sessions list + replay/export/report ---- */
+function renderSessions(sess){
+  $('#trendsel').innerHTML = sess.map(s=>{
+    const dur = s.ended_at && s.started_at ? fmtDur(s.ended_at-s.started_at) : 'live';
+    return `<option value="${s.id}">#${s.id} · ${fmtTime(s.started_at)} · ${dur}</option>`;
+  }).join('') || '<option>—</option>';
+  $('#sesslist').innerHTML = sess.length ? sess.map(s=>{
+    const live = !s.ended_at;
+    const dur = live ? 'live' : fmtDur((s.ended_at||0)-(s.started_at||0));
+    return `<div class="s" data-sid="${s.id}">
+      <div class="top"><span class="id">Session #${s.id}</span>
+        <span class="muted">${s.sample_rate||'—'} Hz</span>
+        <span class="dur">${dur}</span></div>
+      <div class="when">${fmtTime(s.started_at)} → ${live?'in progress':fmtTime(s.ended_at)}</div>
+      <div class="acts">
+        <button class="btn ghost" data-act="trend">Trend</button>
+        <button class="btn" data-act="replay">▶ Replay</button>
+        <a class="btn ghost" href="/api/sessions/${s.id}/export.csv" download>CSV</a>
+        <a class="btn ghost" href="/api/sessions/${s.id}/export.csv?kind=metrics" download>Metrics CSV</a>
+        <a class="btn ghost" href="/report/${s.id}" target="_blank">Report</a>
+      </div></div>`;
+  }).join('') : '<div class="muted">No sessions yet.</div>';
+  $$('#sesslist .s .acts button').forEach(b=>{
+    b.onclick = () => {
+      const sid = parseInt(b.closest('.s').dataset.sid,10);
+      if(b.dataset.act==='trend'){ loadTrend(sid); showTab('trends'); }
+      else if(b.dataset.act==='replay'){ startReplay(sid); }
+    };
+  });
+}
+
+/* ---- replay engine ---- */
+let replaying=false, rpData=[], rpIdx=0, rpTimer=null, rpRate=62.5, rpPlaying=false;
+async function startReplay(sid){
+  const {ok,data}=await api('/api/sessions/'+sid+'/samples');
+  if(!ok || !data.samples || data.samples.length<2){ toast('No waveform to replay',true); return; }
+  rpData=data.samples; rpIdx=0;
+  const span=rpData[rpData.length-1][0]-rpData[0][0];
+  rpRate = span>0 ? (rpData.length-1)/span : 62.5;
+  replaying=true; frozen=false;
+  $('#freeze').classList.remove('accent');
+  $('#replaybar').classList.add('show');
+  $('#rp_seek').max = rpData.length-1;
+  showTab('monitor');
+  setStatus('signal','replay');
+  rpSeekTo(0); playReplay(true);
+}
+function rpClock(){
+  const cur = rpData.length? rpData[Math.min(rpIdx,rpData.length-1)][0]-rpData[0][0] : 0;
+  const tot = rpData.length? rpData[rpData.length-1][0]-rpData[0][0] : 0;
+  $('#rp_clock').textContent = fmtDur(cur)+' / '+fmtDur(tot);
+}
+function rpSeekTo(i){
+  rpIdx=Math.max(0,Math.min(i,rpData.length-1));
+  clearBuf();
+  const start=Math.max(0, rpIdx-WINDOW);
+  for(let k=start;k<rpIdx;k++){ buf.raw[head]=rpData[k][1]; buf.fe[head]=rpData[k][2];
+    head=(head+1)%WINDOW; filled=Math.min(filled+1,WINDOW); }
+  $('#rp_seek').value=rpIdx; rpClock();
+}
+function playReplay(on){
+  rpPlaying=on; $('#rp_play').textContent = on?'❚❚':'▶';
+  clearInterval(rpTimer);
+  if(!on) return;
+  const TICK=50, chunk=Math.max(1,Math.round(rpRate*TICK/1000));
+  rpTimer=setInterval(()=>{
+    if(rpIdx>=rpData.length-1){ playReplay(false); return; }
+    const end=Math.min(rpData.length, rpIdx+chunk);
+    for(;rpIdx<end;rpIdx++){ buf.raw[head]=rpData[rpIdx][1]; buf.fe[head]=rpData[rpIdx][2];
+      head=(head+1)%WINDOW; filled=Math.min(filled+1,WINDOW); }
+    $('#rp_seek').value=rpIdx; rpClock();
+  }, TICK);
+}
+function stopReplay(){
+  replaying=false; rpPlaying=false; clearInterval(rpTimer);
+  $('#replaybar').classList.remove('show'); rpData=[]; clearBuf();
+  setStatus('idle','live');
+}
+$('#rp_play').onclick = () => playReplay(!rpPlaying);
+$('#rp_stop').onclick = stopReplay;
+$('#rp_seek').oninput = e => { playReplay(false); rpSeekTo(parseInt(e.target.value,10)); };
+
 /* ---- patient meta / info tab ---- */
 async function loadMeta(){
   const {ok,data} = await api('/api/patients/'+encodeURIComponent(PID));
   if(!ok) return;
   patient = data;
-  $('#ptitle').textContent = (data.name||data.id);
-  document.title = 'fECG • ' + (data.name||data.id);
+  $('#ptitle').textContent = (data.full_name||data.id);
+  document.title = 'fECG • ' + (data.full_name||data.id);
   $('#kv').innerHTML = [
-    ['ID',data.id],['Name',data.name||'—'],['MRN',data.mrn||'—'],
-    ['Sex',data.sex||'—'],['DOB',data.dob||'—'],['Notes',data.notes||'—'],
+    ['ID',data.id],['Name',data.full_name||'—'],['MRN',data.mrn||'—'],
+    ['Gender',data.gender||'—'],['DOB',data.date_of_birth||'—'],
+    ['Citizen ID',data.citizen_id||'—'],['Address',data.address||'—'],
+    ['Notes',data.notes||'—'],
   ].map(([k,v])=>`<div class="k">${k}</div><div>${esc(v)}</div>`).join('');
   $('#nsamp').textContent=(data.stats.total_samples||0).toLocaleString();
   $('#nsess').textContent=data.stats.sessions.length;
-  $('#sessrows').innerHTML = data.stats.sessions.map(s=>
-    `<tr><td>${s.id}</td><td>${fmtTime(s.started_at)}</td><td>${fmtTime(s.ended_at)}</td><td>${s.sample_rate||'—'} Hz</td></tr>`
-  ).join('') || '<tr><td colspan="4" class="muted">No sessions yet</td></tr>';
+  renderSessions(data.stats.sessions);
   if(data.live) applyMetrics(data.live);
+  // default trend = most recent session
+  if(selSession==null && data.stats.sessions.length) loadTrend(data.stats.sessions[0].id);
+  else if(selSession!=null) loadTrend(selSession);
   if(!firstPreloaded){ for(const r of (data.recent||[])) pushSample(r[1],r[2]); firstPreloaded=true; }
 }
 let firstPreloaded=false;
@@ -216,8 +362,8 @@ function connect(){
   ws.onmessage = e => {
     const m=JSON.parse(e.data);
     if(m.type==='samples'){
-      if(m.data) for(const r of m.data) pushSample(r[1],r[2]);
-      if(m.metrics) applyMetrics(m.metrics);
+      if(!replaying && m.data) for(const r of m.data) pushSample(r[1],r[2]);
+      if(m.metrics && !replaying) applyMetrics(m.metrics);
     }
   };
   ws.onclose = () => { clearInterval(ping); setTimeout(connect,2000); };

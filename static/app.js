@@ -20,7 +20,7 @@ async function api(path, opts = {}){
 
 async function loadMe(){
   try{ const {ok, data} = await api('/api/me');
-    if (ok) $$('[data-who]').forEach(el => el.textContent = data.name || data.username);
+    if (ok) $$('[data-who]').forEach(el => el.textContent = data.name || '—');
   }catch(e){}
 }
 
@@ -47,6 +47,78 @@ function drawSpark(canvas, arr, color){
     i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
   }
   ctx.stroke();
+}
+
+/* ---- duration helper ---- */
+function fmtDur(sec){
+  if (sec == null || !isFinite(sec) || sec < 0) return '—';
+  sec = Math.round(sec);
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+  return (h?`${h}h `:'') + (h||m?`${m}m `:'') + `${s}s`;
+}
+
+/* ---- FHR/MHR trend chart (vanilla canvas, used by patient view + report) ----
+   metrics: [[t,fhr,mhr,sq,alarm], ...] (t seconds). events optional. */
+function drawTrendChart(canvas, metrics, opts){
+  opts = opts || {};
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth || 600, H = canvas.clientHeight || 220;
+  canvas.width = W*dpr; canvas.height = H*dpr;
+  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  const cs = getComputedStyle(document.body);
+  const colFe = (cs.getPropertyValue('--fecg').trim()||'#ff5c9d');
+  const colRaw = (cs.getPropertyValue('--raw').trim()||'#22d3ee');
+  if (!metrics || metrics.length < 2){
+    ctx.fillStyle = cs.getPropertyValue('--muted').trim()||'#90a0ba';
+    ctx.font = '13px system-ui'; ctx.textAlign='center';
+    ctx.fillText('No trend data yet', W/2, H/2);
+    return;
+  }
+  const padL=34, padR=10, padT=10, padB=18;
+  const x0=padL, x1=W-padR, y0=padT, y1=H-padB;
+  const t0 = metrics[0][0], tN = metrics[metrics.length-1][0];
+  const span = Math.max(1e-3, tN - t0);
+  const yLo = 50, yHi = 210;                       // bpm axis
+  const X = t => x0 + (x1-x0)*((t-t0)/span);
+  const Y = v => y1 - (y1-y0)*((v-yLo)/(yHi-yLo));
+  // normal fetal band 110-160
+  ctx.fillStyle = 'rgba(52,211,153,.08)';
+  ctx.fillRect(x0, Y(160), x1-x0, Y(110)-Y(160));
+  // gridlines + y labels
+  ctx.strokeStyle='rgba(255,255,255,.06)'; ctx.fillStyle='rgba(144,160,186,.8)';
+  ctx.font='9px system-ui'; ctx.textAlign='right'; ctx.lineWidth=1;
+  for (let v=60; v<=200; v+=20){
+    const y=Y(v); ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+    ctx.fillText(v, x0-4, y+3);
+  }
+  // alarm event markers (vertical lines)
+  for (const e of (opts.events||[])){
+    if (e.kind!=='alarm') continue;
+    const x=X(e.t);
+    ctx.strokeStyle = /brady|tachy/i.test(e.label) ? 'rgba(251,81,96,.5)' :
+                      /signal/i.test(e.label) ? 'rgba(251,191,36,.5)' : 'rgba(91,140,255,.35)';
+    ctx.beginPath(); ctx.moveTo(x,y0); ctx.lineTo(x,y1); ctx.stroke();
+  }
+  // line drawer that breaks on null
+  const line = (idx, color) => {
+    ctx.strokeStyle=color; ctx.lineWidth=1.6; ctx.lineJoin='round'; ctx.beginPath();
+    let pen=false;
+    for (const r of metrics){
+      const v=r[idx];
+      if (v==null){ pen=false; continue; }
+      const x=X(r[0]), y=Y(v);
+      pen ? ctx.lineTo(x,y) : ctx.moveTo(x,y); pen=true;
+    }
+    ctx.stroke();
+  };
+  line(2, colRaw);   // MHR
+  line(1, colFe);    // FHR
+  // x time labels (start / end relative minutes)
+  ctx.fillStyle='rgba(144,160,186,.8)'; ctx.textAlign='left';
+  ctx.fillText('0:00', x0, y1+12);
+  ctx.textAlign='right';
+  ctx.fillText(fmtDur(span).replace(/\s+/g,''), x1, y1+12);
 }
 
 /* ---- toast ---- */
@@ -82,15 +154,19 @@ function openPatientSheet(p, onSaved){
       <input id="f_id" value="${esc(p.id||'')}" ${editing?'disabled':''} placeholder="e.g. P004" autocapitalize="characters">
       <div class="err" id="f_err"></div>
     </div>
-    <div class="field"><label>Name</label><input id="f_name" value="${esc(p.name||'')}" placeholder="Full name"></div>
+    <div class="field"><label>Full name</label><input id="f_full_name" value="${esc(p.full_name||'')}" placeholder="Full name"></div>
     <div class="grid2">
       <div class="field"><label>MRN</label><input id="f_mrn" value="${esc(p.mrn||'')}"></div>
-      <div class="field"><label>Sex</label>
-        <select id="f_sex">
-          ${['','F','M','Other'].map(o=>`<option ${(p.sex||'')===o?'selected':''}>${o}</option>`).join('')}
+      <div class="field"><label>Gender</label>
+        <select id="f_gender">
+          ${['','F','M','Other'].map(o=>`<option ${(p.gender||'')===o?'selected':''}>${o}</option>`).join('')}
         </select></div>
     </div>
-    <div class="field"><label>Date of birth</label><input id="f_dob" type="date" value="${esc(p.dob||'')}"></div>
+    <div class="grid2">
+      <div class="field"><label>Date of birth</label><input id="f_date_of_birth" type="date" value="${esc(p.date_of_birth||'')}"></div>
+      <div class="field"><label>Citizen ID</label><input id="f_citizen_id" value="${esc(p.citizen_id||'')}"></div>
+    </div>
+    <div class="field"><label>Address</label><input id="f_address" value="${esc(p.address||'')}" placeholder="Street, district, city"></div>
     <div class="field"><label>Notes / gestation</label><textarea id="f_notes" placeholder="e.g. 32 weeks gestation">${esc(p.notes||'')}</textarea></div>
     <div class="row">
       <button class="btn ghost" id="f_cancel">Cancel</button>
@@ -100,8 +176,10 @@ function openPatientSheet(p, onSaved){
   $('#f_cancel').onclick = closeSheet;
   $('#f_save').onclick = async () => {
     const body = {
-      name: $('#f_name').value.trim(), mrn: $('#f_mrn').value.trim(),
-      sex: $('#f_sex').value, dob: $('#f_dob').value, notes: $('#f_notes').value.trim(),
+      full_name: $('#f_full_name').value.trim(), mrn: $('#f_mrn').value.trim(),
+      gender: $('#f_gender').value, date_of_birth: $('#f_date_of_birth').value,
+      citizen_id: $('#f_citizen_id').value.trim(), address: $('#f_address').value.trim(),
+      notes: $('#f_notes').value.trim(),
     };
     let res;
     if (editing){
